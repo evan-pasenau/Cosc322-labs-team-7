@@ -1,27 +1,38 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
- 
-    <groupId>ubc.cosc322</groupId>
-    <artifactId>team-00</artifactId>
+<!--     <parent>
+        <artifactId>cosc322</artifactId>
+        <groupId>ubc</groupId>
+        <version>1.0</version>
+    </parent>-->
+
+    <groupId>ubc.cosc322.assignments</groupId>
+    <artifactId>assignment-01</artifactId>
     <version>1.0</version>
     <packaging>jar</packaging>
      
 
-    <name>COSC322-Team-00</name>
-    <description>COSC 322 Game Player Project</description>
-    <inceptionYear>2021</inceptionYear>
+    <name>COSC322-Assignment-01</name>
+    <description>COSC 322 Assignment-01</description>
+    <inceptionYear>2019</inceptionYear>
     
-	
     <dependencies> 
-        <dependency>	        
-	    <groupId>ubc-yong-gao</groupId>
-            <artifactId>ygraph-ai-smartfox-client</artifactId>
-            <version>2.1</version>
-            <type>jar</type>
+        <dependency>
+            <groupId>ubc-yong-gao</groupId>
+            <artifactId>ygraph</artifactId>
+            <version>1.0</version>
+            <type>jar</type>           
+        </dependency>
+        
+        <dependency>
+            <groupId>ubc-yong-gao</groupId>
+            <artifactId>state-space-search</artifactId>
+            <version>2.0</version>
+            <type>jar</type>           
         </dependency>
     </dependencies>
-	
+    
     <repositories>
         <repository>
             <id>ubc-yong-gao</id>
@@ -33,22 +44,19 @@
         </repository>
     </repositories>
     
-    <url>https:people.ok.uc.ca/yongg</url>
-    <developers>
-        <developer>
-            <id>Team-00</id>
-            <name>Team members</name>
-            <email></email>
-        </developer> 
+    <url>https://cmps-people.ok.ubc.ca/yongg</url>
+    <developers> 
         <developer>
             <id>yg</id>
             <name>Yong Gao</name>
             <email>yong.gao@ubc.ca</email>
         </developer> 
     </developers>
+    
+    
+
 
     <build>
- 
     </build>
     <properties>
         <maven.compiler.source>1.8</maven.compiler.source>
