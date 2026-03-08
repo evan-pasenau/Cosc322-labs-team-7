@@ -2,6 +2,7 @@ package ubc.cosc322;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -23,6 +24,8 @@ public class COSC322Test extends GamePlayer {
     private boolean isBlack = false;
     private int[][] board;
     private Random random;
+
+    private int moveCount = 0;
 
     public static void main(String[] args) {
         COSC322Test player = new COSC322Test("player2", "name");
@@ -88,6 +91,8 @@ public class COSC322Test extends GamePlayer {
                 queenNext.get(0), queenNext.get(1),
                 arrowPos.get(0), arrowPos.get(1));
 
+            //moveCount++;
+
             if(userName.equals("player2"))   
                 makeRandomMove();
             else if(userName.equals("player1"))
@@ -121,6 +126,7 @@ public class COSC322Test extends GamePlayer {
         getGameGUI().updateGameState(queenPosCurrent, queenPosNew, arrowPos);
 
         board = MoveGeneration.applyMove(board, fromRow, fromCol, toRow, toCol, arrowRow, arrowCol);
+        //moveCount++;
     }
 
     private void makeIntelligentMove() {
@@ -135,25 +141,52 @@ public class COSC322Test extends GamePlayer {
         int bestScore = Integer.MIN_VALUE;
         int[] bestMove = moves.get(0);
 
-        System.out.println("Total legal moves: " + moves.size());
+        int totalMoves = moves.size();
+        System.out.println("Total legal moves: " + totalMoves);
+
+        // --- Dynamic depth and sample size selection ---
+        int depth;
+        int sampleSize;
+        if (totalMoves > 1000) {
+            depth = 2;        // very early game
+            sampleSize = 50;
+        } 
+        else if (totalMoves > 500) {
+            depth = 3;        // early-mid game
+            sampleSize = 40;
+        } 
+        else if (totalMoves > 250) {
+            depth = 3;        // mid game
+            sampleSize = 70;
+        } 
+        else if (totalMoves > 100) {
+            depth = 3;        // late mid game
+            sampleSize = 80;
+        } 
+        else {
+            depth = 6;        // endgame
+            sampleSize = moves.size(); // search all moves when few are left
+        }
+
+        System.out.println("Search depth: " + depth);
 
         // Shuffle moves to randomize selection
         List<int[]> shuffledMoves = new ArrayList<>(moves);
         java.util.Collections.shuffle(shuffledMoves, random);
 
-        // Limit to 100 random moves (or fewer if less available)
-        int sampleSize = Math.min(100, shuffledMoves.size());
-
+        // Limit sample of moves searched with minimax as evaluating all takes far too long in the early game
+        // When less moves are available we can afford to search more of them
+            // This is a simple way to reduce the branching factor for deeper search, taking too long at the beginning
         for (int i = 0; i < sampleSize; i++) {
             int[] move = shuffledMoves.get(i);
             int[][] newBoard = MoveGeneration.applyMove(board,
                     move[0], move[1], move[2], move[3], move[4], move[5]);
 
-            System.err.println("Evaluating move: " + Arrays.toString(move));
-            int score = minimaxAlphaBeta(newBoard, 1, Integer.MIN_VALUE,
+            //System.err.println("Evaluating move: " + Arrays.toString(move));
+            int score = minimaxAlphaBeta(newBoard, depth, Integer.MIN_VALUE,
                 Integer.MAX_VALUE, false, color);
 
-            System.err.println("[" + i + "] Move score: " + score);
+            //System.err.println("[" + i + "] Move score: " + score);
             if (score > bestScore) {
                 bestScore = score;
                 bestMove = move;
@@ -171,64 +204,165 @@ public class COSC322Test extends GamePlayer {
         getGameClient().sendMoveMessage(queenPosCurrent, queenPosNew, arrowPos);
         getGameGUI().updateGameState(queenPosCurrent, queenPosNew, arrowPos);
 
+        System.out.println("Making move: " + moveCount);
         board = MoveGeneration.applyMove(board, fromRow, fromCol, toRow, toCol, arrowRow, arrowCol);
         System.out.println("Best move score: " + bestScore);
+        moveCount++;
     }
-
-    /*
-     * Score a move based on heuristic evaluation
-     * Higher score = better move
-     */
-
-    /* 
-    private int minimax(int[][] boardState, int depth, boolean maximizingPlayer, int color) {
-
-        int currentColor = maximizingPlayer ? color :
-            (color == MoveGeneration.BLACK ? MoveGeneration.WHITE : MoveGeneration.BLACK);
-
-        List<int[]> moves = MoveGeneration.getAllMoves(boardState, currentColor);
-
-        if (depth == 0 || moves.isEmpty()) {
-            return evaluateBoard(boardState, color);
-        }
-
-        if (maximizingPlayer) {
-            int maxEval = Integer.MIN_VALUE;
-            for (int[] move : moves) {
-                int[][] newBoard = MoveGeneration.applyMove(boardState,
-                        move[0], move[1], move[2], move[3], move[4], move[5]);
-
-                int eval = minimax(newBoard, depth - 1, false, color);
-                maxEval = Math.max(maxEval, eval);
-            }
-            return maxEval;
-        } else {
-            int minEval = Integer.MAX_VALUE;
-            for (int[] move : moves) {
-                int[][] newBoard = MoveGeneration.applyMove(boardState,
-                        move[0], move[1], move[2], move[3], move[4], move[5]);
-
-                int eval = minimax(newBoard, depth - 1, true, color);
-                minEval = Math.min(minEval, eval);
-            }
-            return minEval;
-        }
-    }
-        */
 
     /*
     * Evaluate the board state and return a score
     */
-    private int evaluateBoard(int[][] boardState, int color) {
-        int myMoves = MoveGeneration.getAllMoves(boardState, color).size();
+    /*
+ * Evaluate the board state using mobility, territory, and freedom
+ */
+    private int evaluateBoard(int[][] boardState, int color, int numMyMoves) {
+        int oppColor = (color == MoveGeneration.BLACK)
+                ? MoveGeneration.WHITE : MoveGeneration.BLACK;
 
-        int oppColor = (color == MoveGeneration.BLACK) ?
-                MoveGeneration.WHITE : MoveGeneration.BLACK;
-
+        // --- Mobility ---
+        int myMoves = numMyMoves;
         int oppMoves = MoveGeneration.getAllMoves(boardState, oppColor).size();
+        int mobilityScore = myMoves - oppMoves;
 
-        return myMoves - (2 * oppMoves);
+        // --- Territory ---
+        int myTerritory = countReachableSquares(boardState, color);
+        int oppTerritory = countReachableSquares(boardState, oppColor);
+        int territoryScore = myTerritory - oppTerritory;
+
+        // --- Freedom ---
+        int myFreedom = calculateFreedom(boardState, color);
+        int oppFreedom = calculateFreedom(boardState, oppColor);
+        int freedomScore = myFreedom - oppFreedom;
+
+        // --- Centralization ---
+        int myCenter = calculateCentralization(boardState, color);
+        int oppCenter = calculateCentralization(boardState, oppColor);
+        int centralizationScore = myCenter - oppCenter;
+
+        // --- Dynamic weights depending on game phase ---
+        int territoryWeight = 3;
+        int mobilityWeight = 2;
+        int freedomWeight = 1;
+        int centralWeight = 1;
+
+        // Early game: emphasize centralization
+        if (moveCount <= 6) {
+            centralWeight = 4;
+        }
+
+        // Late game: emphasize territory
+        if (moveCount >= 12) {
+            territoryWeight = 5;
+        }
+
+        return (territoryWeight * territoryScore)
+                + (mobilityWeight * mobilityScore)
+                + (freedomWeight * freedomScore)
+                + (centralWeight * centralizationScore);
     }
+
+
+    // Territory function, counts how many empty squares are reachable from all of the player's queens
+    private int countReachableSquares(int[][] board, int color) {
+        int size = board.length;
+        boolean[][] visited = new boolean[size][size];
+        int count = 0;
+
+        int[][] directions = {
+            {-1,-1},{-1,0},{-1,1},
+            {0,-1},{0,1},
+            {1,-1},{1,0},{1,1}
+        };
+
+        for (int r = 0; r < size; r++) {
+            for (int c = 0; c < size; c++) {
+
+                if (board[r][c] == color) {
+
+                    for (int[] d : directions) {
+                        int nr = r + d[0];
+                        int nc = c + d[1];
+
+                        while (nr >= 0 && nr < size && nc >= 0 && nc < size
+                                && board[nr][nc] == 0) {
+
+                            if (!visited[nr][nc]) {
+                                visited[nr][nc] = true;
+                                count++;
+                            }
+
+                            nr += d[0];
+                            nc += d[1];
+                        }
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    /*
+     * Freedom function, counts how many empty squares are reachable from all of the player's 
+     * queens, but counts each square multiple times if reachable from multiple queens
+     */
+    private int calculateFreedom(int[][] board, int color) {
+        int size = board.length;
+        int freedom = 0;
+
+        int[][] directions = {
+            {-1,-1},{-1,0},{-1,1},
+            {0,-1},{0,1},
+            {1,-1},{1,0},{1,1}
+        };
+
+        for (int r = 0; r < size; r++) {
+            for (int c = 0; c < size; c++) {
+
+                if (board[r][c] == color) {
+
+                    for (int[] d : directions) {
+                        int nr = r + d[0];
+                        int nc = c + d[1];
+
+                        while (nr >= 0 && nr < size && nc >= 0 && nc < size
+                                && board[nr][nc] == 0) {
+
+                            freedom++;
+                            nr += d[0];
+                            nc += d[1];
+                        }
+                    }
+                }
+            }
+        }
+        return freedom;
+    }
+
+
+    /*
+     * Centralization function, rewards pieces that are closer to the center of the board
+     */
+    private int calculateCentralization(int[][] board, int color) {
+        int size = board.length;
+        double center = (size - 1) / 2.0;
+        int score = 0;
+
+        for (int r = 0; r < size; r++) {
+            for (int c = 0; c < size; c++) {
+
+                if (board[r][c] == color) {
+
+                    double dist = Math.abs(r - center) + Math.abs(c - center);
+
+                    // closer to center = higher score
+                    score += (int)(12 - dist * 2);
+                }
+            }
+        }
+        return score;
+    }
+
 
     /*
      * Minimax with alpha-beta pruning to optimize search
@@ -238,15 +372,50 @@ public class COSC322Test extends GamePlayer {
             (color == MoveGeneration.BLACK ? MoveGeneration.WHITE : MoveGeneration.BLACK);
 
         List<int[]> moves = MoveGeneration.getAllMoves(boardState, currentColor);
+        // Randomize slightly to avoid deterministic ordering
+        Collections.shuffle(moves, random);
 
+        // Code to sort moves based on quick evaluation so we evaluate promising moves first,
+        // takes a long time right now tho so commented out
+        /*
+        // Sort moves based on quick evaluation, ensures we evaluate promising moves first
+        // and improves pruning
+        final int[] count = {0};
+        System.err.println("Sorting " + moves.size() + " moves at depth " + depth);
+        Collections.sort(moves, (a, b) -> {
+            int[][] boardA = MoveGeneration.applyMove(boardState,
+                    a[0], a[1], a[2], a[3], a[4], a[5]);
+            int[][] boardB = MoveGeneration.applyMove(boardState,
+                    b[0], b[1], b[2], b[3], b[4], b[5]);
+
+            int movesA = MoveGeneration.getAllMoves(boardA, color).size();
+            int movesB = MoveGeneration.getAllMoves(boardB, color).size();
+
+            System.err.println("Evaluating move " + count[0]++ + ": " + Arrays.toString(a) + " vs " + Arrays.toString(b));
+            int scoreA = evaluateBoard(boardA, color, movesA);
+            int scoreB = evaluateBoard(boardB, color, movesB);
+
+            return Integer.compare(scoreB, scoreA);
+        });
+        System.err.println("Best move after sorting: " + Arrays.toString(moves.get(0)));
+        */
+
+        // Limit branching factor by searching 30 most promising moves (or fewer if less available)
+            // or just 30 random moves if not sorting
+        moves = moves.subList(0, Math.min(30, moves.size()));
+
+        // Leaf node
         if (depth == 0 || moves.isEmpty()) {
-            return evaluateBoard(boardState, color);
+            int myMoves = MoveGeneration.getAllMoves(boardState, color).size();
+            return evaluateBoard(boardState, color, myMoves);
         }
 
         if (maximizingPlayer) {
+
             int maxEval = Integer.MIN_VALUE;
 
             for (int[] move : moves) {
+
                 int[][] newBoard = MoveGeneration.applyMove(boardState,
                         move[0], move[1], move[2], move[3], move[4], move[5]);
 
@@ -257,15 +426,18 @@ public class COSC322Test extends GamePlayer {
                 alpha = Math.max(alpha, eval);
 
                 if (beta <= alpha) {
-                    break; //prune here
+                    break; // prune
                 }
             }
+
             return maxEval;
 
         } else {
+
             int minEval = Integer.MAX_VALUE;
 
             for (int[] move : moves) {
+
                 int[][] newBoard = MoveGeneration.applyMove(boardState,
                         move[0], move[1], move[2], move[3], move[4], move[5]);
 
@@ -276,9 +448,10 @@ public class COSC322Test extends GamePlayer {
                 beta = Math.min(beta, eval);
 
                 if (beta <= alpha) {
-                    break; //prune here
+                    break; // prune
                 }
             }
+
             return minEval;
         }
     }
