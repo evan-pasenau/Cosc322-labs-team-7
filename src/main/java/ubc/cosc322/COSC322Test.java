@@ -210,12 +210,10 @@ public class COSC322Test extends GamePlayer {
         moveCount++;
     }
 
+
     /*
-    * Evaluate the board state and return a score
+    * Evaluate the board state using mobility, territory, and freedom
     */
-    /*
- * Evaluate the board state using mobility, territory, and freedom
- */
     private int evaluateBoard(int[][] boardState, int color, int numMyMoves) {
         int oppColor = (color == MoveGeneration.BLACK)
                 ? MoveGeneration.WHITE : MoveGeneration.BLACK;
@@ -226,9 +224,7 @@ public class COSC322Test extends GamePlayer {
         int mobilityScore = myMoves - oppMoves;
 
         // --- Territory ---
-        int myTerritory = countReachableSquares(boardState, color);
-        int oppTerritory = countReachableSquares(boardState, oppColor);
-        int territoryScore = myTerritory - oppTerritory;
+        int territoryScore = calculateVoronoiTerritory(boardState, color);
 
         // --- Freedom ---
         int myFreedom = calculateFreedom(boardState, color);
@@ -262,12 +258,44 @@ public class COSC322Test extends GamePlayer {
                 + (centralWeight * centralizationScore);
     }
 
-
-    // Territory function, counts how many empty squares are reachable from all of the player's queens
-    private int countReachableSquares(int[][] board, int color) {
+    /* 
+     * Territory function, uses a Voronoi-like approach to count how many empty squares are closer
+     * to our queens than opponent's queens, minus the opposite
+     */
+    private int calculateVoronoiTerritory(int[][] board, int color) {
+        int oppColor = (color == MoveGeneration.BLACK)
+                ? MoveGeneration.WHITE : MoveGeneration.BLACK;
         int size = board.length;
-        boolean[][] visited = new boolean[size][size];
-        int count = 0;
+        int myScore = 0;
+        int oppScore = 0;
+
+        for (int r = 0; r < size; r++) {
+            for (int c = 0; c < size; c++) {
+
+                if (board[r][c] != 0)
+                    continue;
+
+                int myDist = queenDistance(board, r, c, color);
+                int oppDist = queenDistance(board, r, c, oppColor);
+
+                if (myDist < oppDist)
+                    myScore++;
+                else if (oppDist < myDist)
+                    oppScore++;
+            }
+        }
+
+        return myScore - oppScore;
+    }
+
+
+    /*
+     * Calculates the minimum distance from a target square to any queen of the specified color
+     * Used in the Voronoi territory calculation to determine which player controls each empty square
+     */
+    private int queenDistance(int[][] board, int targetR, int targetC, int color) {
+        int size = board.length;
+        int minDist = Integer.MAX_VALUE;
 
         int[][] directions = {
             {-1,-1},{-1,0},{-1,1},
@@ -280,26 +308,14 @@ public class COSC322Test extends GamePlayer {
 
                 if (board[r][c] == color) {
 
-                    for (int[] d : directions) {
-                        int nr = r + d[0];
-                        int nc = c + d[1];
+                    int dist = Math.max(Math.abs(targetR - r), Math.abs(targetC - c));
 
-                        while (nr >= 0 && nr < size && nc >= 0 && nc < size
-                                && board[nr][nc] == 0) {
-
-                            if (!visited[nr][nc]) {
-                                visited[nr][nc] = true;
-                                count++;
-                            }
-
-                            nr += d[0];
-                            nc += d[1];
-                        }
-                    }
+                    if (dist < minDist)
+                        minDist = dist;
                 }
             }
         }
-        return count;
+        return minDist;
     }
 
     /*
