@@ -92,11 +92,7 @@ public class COSC322Test extends GamePlayer {
                 arrowPos.get(0), arrowPos.get(1));
 
             //moveCount++;
-
-            if(userName.equals("player2"))   
-                makeRandomMove();
-            else if(userName.equals("player1"))
-                makeIntelligentMove();
+            makeIntelligentMove();
         }
 
         return true;
@@ -164,7 +160,7 @@ public class COSC322Test extends GamePlayer {
             sampleSize = 80;
         } 
         else {
-            depth = 6;        // endgame
+            depth = 4;        // endgame
             sampleSize = moves.size(); // search all moves when few are left
         }
 
@@ -182,11 +178,11 @@ public class COSC322Test extends GamePlayer {
             int[][] newBoard = MoveGeneration.applyMove(board,
                     move[0], move[1], move[2], move[3], move[4], move[5]);
 
-            //System.err.println("Evaluating move: " + Arrays.toString(move));
+            System.err.println("Evaluating move: " + Arrays.toString(move));
             int score = minimaxAlphaBeta(newBoard, depth, Integer.MIN_VALUE,
                 Integer.MAX_VALUE, false, color);
 
-            //System.err.println("[" + i + "] Move score: " + score);
+            System.err.println("[" + i + "] Move score: " + score);
             if (score > bestScore) {
                 bestScore = score;
                 bestMove = move;
