@@ -28,7 +28,7 @@ public class COSC322Test extends GamePlayer {
     private int moveCount = 0;
 
     public static void main(String[] args) {
-        COSC322Test player = new COSC322Test("player2", "name");
+        COSC322Test player = new COSC322Test("player5", "name");
 
         if (player.getGameGUI() == null) {
             player.Go();
@@ -73,11 +73,12 @@ public class COSC322Test extends GamePlayer {
 
         } else if (GameMessage.GAME_ACTION_START.equals(messageType)) {
             String blackPlayer = (String) msgDetails.get(AmazonsGameMessage.PLAYER_BLACK);
+            String whitePlayer = (String) msgDetails.get(AmazonsGameMessage.PLAYER_WHITE);
+            System.out.println("Black: '" + blackPlayer + "', White: '" + whitePlayer + "', We are: '" + userName + "'");
             isBlack = userName.equals(blackPlayer);
-
-            if (!isBlack) {
-                makeRandomMove();
-            }
+            System.out.println("isBlack = " + isBlack);
+            isBlack = userName.equals(blackPlayer);
+            makeIntelligentMove();
 
         } else if (GameMessage.GAME_ACTION_MOVE.equals(messageType)) {
             getGameGUI().updateGameState(msgDetails);
