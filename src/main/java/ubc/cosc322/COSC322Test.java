@@ -13,6 +13,12 @@ import ygraph.ai.smartfox.games.GameMessage;
 import ygraph.ai.smartfox.games.GamePlayer;
 import ygraph.ai.smartfox.games.amazons.AmazonsGameMessage;
 
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
+
 public class COSC322Test extends GamePlayer {
 
     private GameClient gameClient = null;
@@ -26,9 +32,20 @@ public class COSC322Test extends GamePlayer {
     private Random random;
 
     private int moveCount = 0;
+    
+    private ExecutorService executor;
 
+    private class MoveResult {
+        int[] move;
+        int score;
+
+        public MoveResult(int[] move, int score) {
+            this.move = move;
+            this.score = score;
+        }
+    }
     public static void main(String[] args) {
-        COSC322Test player = new COSC322Test("player5", "name");
+        COSC322Test player = new COSC322Test("player9", "name");
 
         if (player.getGameGUI() == null) {
             player.Go();
@@ -47,6 +64,17 @@ public class COSC322Test extends GamePlayer {
         this.passwd = passwd;
         this.gamegui = new BaseGameGUI(this);
         this.random = new Random();
+
+        int cores = Runtime.getRuntime().availableProcessors();
+        this.executor = Executors.newFixedThreadPool(cores);
+        System.out.println("Initialized thread pool with " + cores + " cores.");
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (executor != null && !executor.isShutdown()) {
+                System.out.println("Shutting down thread pool...");
+                executor.shutdownNow();
+            }
+        }));
     }
 
     @Override
@@ -145,19 +173,19 @@ public class COSC322Test extends GamePlayer {
         int depth;
         int sampleSize;
         if (totalMoves > 1000) {
-            depth = 2;        // very early game
-            sampleSize = 50;
+            depth = 3;        // very early game
+            sampleSize = 100;
         } 
         else if (totalMoves > 500) {
-            depth = 3;        // early-mid game
-            sampleSize = 40;
+            depth = 4;        // early-mid game
+            sampleSize = 50;
         } 
         else if (totalMoves > 250) {
-            depth = 3;        // mid game
+            depth = 4;        // mid game
             sampleSize = 70;
         } 
         else if (totalMoves > 100) {
-            depth = 3;        // late mid game
+            depth = 4;        // late mid game
             sampleSize = 80;
         } 
         else {
@@ -174,19 +202,36 @@ public class COSC322Test extends GamePlayer {
         // Limit sample of moves searched with minimax as evaluating all takes far too long in the early game
         // When less moves are available we can afford to search more of them
             // This is a simple way to reduce the branching factor for deeper search, taking too long at the beginning
+
+        AtomicInteger globalAlpha = new AtomicInteger(Integer.MIN_VALUE);
+        List<Future<MoveResult>> futures = new ArrayList<>();
+        
         for (int i = 0; i < sampleSize; i++) {
             int[] move = shuffledMoves.get(i);
             int[][] newBoard = MoveGeneration.applyMove(board,
                     move[0], move[1], move[2], move[3], move[4], move[5]);
 
-            System.err.println("Evaluating move: " + Arrays.toString(move));
-            int score = minimaxAlphaBeta(newBoard, depth, Integer.MIN_VALUE,
-                Integer.MAX_VALUE, false, color);
+            Callable<MoveResult> task = () -> {
+                int currentAlpha = globalAlpha.get(); 
+                
+                int score = minimaxAlphaBeta(newBoard, depth, currentAlpha,
+                    Integer.MAX_VALUE, false, color);
 
-            System.err.println("[" + i + "] Move score: " + score);
-            if (score > bestScore) {
-                bestScore = score;
-                bestMove = move;
+                updateGlobalAlpha(globalAlpha, score);
+                return new MoveResult(move, score);
+            };
+            futures.add(executor.submit(task));
+        }
+
+        for (Future<MoveResult> future : futures) {
+            try {
+                MoveResult result = future.get(); 
+                if (result.score > bestScore) {
+                    bestScore = result.score;
+                    bestMove = result.move;
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
             }
         }
 
@@ -467,6 +512,16 @@ public class COSC322Test extends GamePlayer {
 
             return minEval;
         }
+    }
+
+    private void updateGlobalAlpha(AtomicInteger globalAlpha, int score) {
+        int currentVal;
+        do {
+            currentVal = globalAlpha.get();
+            if (score <= currentVal) {
+                break; // The new score isn't better, do nothing
+            }
+        } while (!globalAlpha.compareAndSet(currentVal, score)); // Only update if no other thread changed it first
     }
 
     @Override
