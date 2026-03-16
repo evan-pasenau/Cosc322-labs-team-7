@@ -137,9 +137,7 @@ public class COSC322Test extends GamePlayer {
         System.out.println("\n--- Move " + (moveCount + 1) + " (" + (isBlack ? "Black" : "White") + ") ---");
         System.out.println("Legal moves: " + totalMoves);
 
-        // =============================================
-        // Phase 1: Shallow eval to rank all moves
-        // =============================================
+        // Shallow eval to rank all moves
         List<int[]> scoredMoves = new ArrayList<>(); // {qFromR, qFromC, qToR, qToC, arrowR, arrowC, score}
         int shallowCount = 0;
 
@@ -169,9 +167,7 @@ public class COSC322Test extends GamePlayer {
         long shallowTime = System.currentTimeMillis() - moveStartTime;
         System.out.println(shallowCount + "/" + totalMoves + " in " + shallowTime + "ms");
 
-        // =============================================
-        // Phase 2: Iterative deepening on top candidates
-        // =============================================
+        // Iterative deepening on top candidates
         int numCandidates = Math.min(MAX_CANDIDATES, scoredMoves.size());
 
         // Extract just the move arrays for the top candidates
@@ -472,7 +468,6 @@ public class COSC322Test extends GamePlayer {
         }
         return score;
     }
-
 
     /*
      * Minimax with alpha-beta pruning to optimize search
