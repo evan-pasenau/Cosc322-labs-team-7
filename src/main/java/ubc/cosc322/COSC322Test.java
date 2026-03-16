@@ -28,7 +28,7 @@ public class COSC322Test extends GamePlayer {
     private int moveCount = 0;
 
     public static void main(String[] args) {
-        COSC322Test player = new COSC322Test("player5", "name");
+        COSC322Test player = new COSC322Test("player3", "name");
 
         if (player.getGameGUI() == null) {
             player.Go();
@@ -77,8 +77,11 @@ public class COSC322Test extends GamePlayer {
             System.out.println("Black: '" + blackPlayer + "', White: '" + whitePlayer + "', We are: '" + userName + "'");
             isBlack = userName.equals(blackPlayer);
             System.out.println("isBlack = " + isBlack);
-            isBlack = userName.equals(blackPlayer);
-            makeIntelligentMove();
+            
+            if(!isBlack){
+                makeIntelligentMove();  
+            }
+            
 
         } else if (GameMessage.GAME_ACTION_MOVE.equals(messageType)) {
             getGameGUI().updateGameState(msgDetails);
@@ -146,7 +149,7 @@ public class COSC322Test extends GamePlayer {
         int sampleSize;
         if (totalMoves > 1000) {
             depth = 2;        // very early game
-            sampleSize = 50;
+            sampleSize = 100;
         } 
         else if (totalMoves > 500) {
             depth = 3;        // early-mid game
