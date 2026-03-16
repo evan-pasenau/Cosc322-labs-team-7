@@ -64,32 +64,34 @@ public class MoveGeneration {
 
     public static List<int[]> getAllMoves(int[][] board, int color) {
         List<int[]> allMoves = new ArrayList<>();
-        List<int[]> queens = getQueenPositions(board, color);
+        // Work on a copy so we never mutate the caller's board
+        int[][] tempBoard = copyBoard(board);
+        List<int[]> queens = getQueenPositions(tempBoard, color);
 
         for (int[] queen : queens) {
             int qRow = queen[0];
             int qCol = queen[1];
 
-            List<int[]> queenMoves = getReachableSquares(board, qRow, qCol);
+            List<int[]> queenMoves = getReachableSquares(tempBoard, qRow, qCol);
 
             for (int[] dest : queenMoves) {
                 int dRow = dest[0];
                 int dCol = dest[1];
 
-                // Temporarily move queen
-                board[qRow][qCol] = EMPTY;
-                board[dRow][dCol] = color;
+                // Temporarily move queen on the copy
+                tempBoard[qRow][qCol] = EMPTY;
+                tempBoard[dRow][dCol] = color;
 
                 // Get arrow moves from new position
-                List<int[]> arrowMoves = getReachableSquares(board, dRow, dCol);
+                List<int[]> arrowMoves = getReachableSquares(tempBoard, dRow, dCol);
 
                 for (int[] arrow : arrowMoves) {
                     allMoves.add(new int[]{qRow, qCol, dRow, dCol, arrow[0], arrow[1]});
                 }
 
                 // Undo temporary move
-                board[dRow][dCol] = EMPTY;
-                board[qRow][qCol] = color;
+                tempBoard[dRow][dCol] = EMPTY;
+                tempBoard[qRow][qCol] = color;
             }
         }
 
