@@ -27,7 +27,7 @@ public class COSC322Test extends GamePlayer {
 
     private int moveCount = 0;
 
-    private static final long MOVE_TIME_LIMIT_MS = 30000; // 30 second server limit
+    private static final long MOVE_TIME_LIMIT_MS = 18000; // 30 second server limit
     private static final long SAFETY_MARGIN_MS = 3000;    // stop 3 seconds early for network latency
     private long moveStartTime;
 
