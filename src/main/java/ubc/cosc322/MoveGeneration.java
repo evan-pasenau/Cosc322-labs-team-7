@@ -8,8 +8,8 @@ import java.util.List;
 public class MoveGeneration {
 
     public static final int EMPTY = 0;
-    public static final int WHITE = 1;
-    public static final int BLACK = 2;
+    public static final int WHITE = 2;
+    public static final int BLACK = 1;
     public static final int ARROW = 3;
 
     private static final int[][] DIRECTIONS = {
