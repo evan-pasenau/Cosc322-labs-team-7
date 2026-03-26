@@ -31,9 +31,12 @@ public class COSC322Test extends GamePlayer {
     private int[][] board;
     private Random random;
 
+    private java.util.concurrent.ConcurrentHashMap<Integer, Integer> evalCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private int[][] killerMoves = new int[50][6];
+
     private int moveCount = 0;
     
-    private static final long MOVE_TIME_LIMIT_MS = 25000; // 30 second server limit
+    private static final long MOVE_TIME_LIMIT_MS = 13000; // 30 second server limit
     private static final long SAFETY_MARGIN_MS = 3000;    // stop 3 seconds early for network latency
     private long moveStartTime;
 
@@ -49,7 +52,7 @@ public class COSC322Test extends GamePlayer {
         }
     }
     public static void main(String[] args) {
-        COSC322Test player = new COSC322Test("player9", "name");
+        COSC322Test player = new COSC322Test("pablo", "name");
 
         if (player.getGameGUI() == null) {
             player.Go();
@@ -150,10 +153,11 @@ public class COSC322Test extends GamePlayer {
         return true;
     }
 
-    private static final int MAX_CANDIDATES = 50; // top moves to search deeply
+    private static final int MAX_CANDIDATES = 100; // top moves to search deeply
 
     private void makeIntelligentMove() {
         int color = isBlack ? MoveGeneration.BLACK : MoveGeneration.WHITE;
+        evalCache.clear();
         List<int[]> moves = MoveGeneration.getAllMoves(board, color);
 
         if (moves.isEmpty()) {
@@ -348,11 +352,18 @@ public class COSC322Test extends GamePlayer {
         System.out.print(bar);
     }
 
-
-    /*
+/*
     * Evaluate the board state using mobility, territory, and freedom
     */
     private int evaluateBoard(int[][] boardState, int color, int numMyMoves) {
+        // 1. Create a unique ID for this exact board layout and color
+        int boardHash = java.util.Arrays.deepHashCode(boardState) * 31 + color;
+        
+        // 2. If we already calculated this exact board on another thread, return the saved score instantly!
+        if (evalCache.containsKey(boardHash)) {
+            return evalCache.get(boardHash);
+        }
+
         int oppColor = (color == MoveGeneration.BLACK)
                 ? MoveGeneration.WHITE : MoveGeneration.BLACK;
 
@@ -390,10 +401,16 @@ public class COSC322Test extends GamePlayer {
             territoryWeight = 5;
         }
 
-        return (territoryWeight * territoryScore)
+        // 3. Calculate the final score
+        int finalScore = (territoryWeight * territoryScore)
                 + (mobilityWeight * mobilityScore)
                 + (freedomWeight * freedomScore)
                 + (centralWeight * centralizationScore);
+
+        // 4. Save the score in the memory bank before returning it
+        evalCache.put(boardHash, finalScore);
+        
+        return finalScore;
     }
 
     /* 
@@ -537,14 +554,13 @@ public class COSC322Test extends GamePlayer {
         return score;
     }
 
-
     /*
      * Minimax with alpha-beta pruning to optimize search
     */
     private int minimaxAlphaBeta(int[][] boardState, int depth, int alpha, int beta, boolean maximizingPlayer, int color) {
-        // Bail out immediately if time is running out — don't waste time on eval
+        // Bail out immediately if time is running out
         if (isTimeUp()) {
-            return 0; // neutral score, this result will be discarded by incomplete depth check
+            return 0;
         }
 
         // Leaf node — run full static eval
@@ -555,49 +571,60 @@ public class COSC322Test extends GamePlayer {
 
         int currentColor = maximizingPlayer ? color :
             (color == MoveGeneration.BLACK ? MoveGeneration.WHITE : MoveGeneration.BLACK);
+        int oppColor = (currentColor == MoveGeneration.BLACK) ? MoveGeneration.WHITE : MoveGeneration.BLACK;
 
         List<int[]> moves = MoveGeneration.getAllMoves(boardState, currentColor);
 
         // Terminal node — no moves means this player lost
         if (moves.isEmpty()) {
-            // If the maximizing player has no moves, that's very bad; if minimizing, very good
             return maximizingPlayer ? Integer.MIN_VALUE + 1 : Integer.MAX_VALUE - 1;
         }
 
-        // Randomize slightly to avoid deterministic ordering
-        Collections.shuffle(moves, java.util.concurrent.ThreadLocalRandom.current());
+        // --- FAST EVALUATION SORTER START ---
+        // 1. Quickly locate opponent queens to target them
+        List<int[]> oppQueens = new ArrayList<>();
+        for (int r = 1; r <= 10; r++) {
+            for (int c = 1; c <= 10; c++) {
+                if (boardState[r][c] == oppColor) {
+                    oppQueens.add(new int[]{r, c});
+                }
+            }
+        }
 
-        // Code to sort moves based on quick evaluation so we evaluate promising moves first,
-        // takes a long time right now tho so commented out
-        /*
-        // Sort moves based on quick evaluation, ensures we evaluate promising moves first
-        // and improves pruning
-        final int[] count = {0};
-        System.err.println("Sorting " + moves.size() + " moves at depth " + depth);
-        Collections.sort(moves, (a, b) -> {
-            int[][] boardA = MoveGeneration.applyMove(boardState,
-                    a[0], a[1], a[2], a[3], a[4], a[5]);
-            int[][] boardB = MoveGeneration.applyMove(boardState,
-                    b[0], b[1], b[2], b[3], b[4], b[5]);
+        // 2. Sort moves based on a lightning-fast heuristic
+        moves.sort((a, b) -> {
+            int scoreA = 0;
+            int scoreB = 0;
 
-            int movesA = MoveGeneration.getAllMoves(boardA, color).size();
-            int movesB = MoveGeneration.getAllMoves(boardB, color).size();
+            // --- KILLER MOVE HEURISTIC ---
+            // If this move was a killer move in a parallel timeline, evaluate it FIRST
+            if (java.util.Arrays.equals(a, killerMoves[depth])) scoreA += 1000000;
+            if (java.util.Arrays.equals(b, killerMoves[depth])) scoreB += 1000000;
 
-            System.err.println("Evaluating move " + count[0]++ + ": " + Arrays.toString(a) + " vs " + Arrays.toString(b));
-            int scoreA = evaluateBoard(boardA, color, movesA);
-            int scoreB = evaluateBoard(boardB, color, movesB);
+            // Heuristic A: Centralization
+            scoreA += (int)(24 - (Math.abs(a[2] - 5.5) + Math.abs(a[3] - 5.5)) * 2 - (Math.abs(a[4] - 5.5) + Math.abs(a[5] - 5.5)));
+            scoreB += (int)(24 - (Math.abs(b[2] - 5.5) + Math.abs(b[3] - 5.5)) * 2 - (Math.abs(b[4] - 5.5) + Math.abs(b[5] - 5.5)));
 
+            // Heuristic B: Arrow Aggression 
+            for (int[] oq : oppQueens) {
+                int distA = Math.max(Math.abs(a[4] - oq[0]), Math.abs(a[5] - oq[1]));
+                if (distA <= 2) scoreA += 15; 
+                if (distA == 1) scoreA += 20; 
+                
+                int distB = Math.max(Math.abs(b[4] - oq[0]), Math.abs(b[5] - oq[1]));
+                if (distB <= 2) scoreB += 15; 
+                if (distB == 1) scoreB += 20;
+            }
+
+            // Sort descending (best scores first)
             return Integer.compare(scoreB, scoreA);
         });
-        System.err.println("Best move after sorting: " + Arrays.toString(moves.get(0)));
-        */
+        // --- FAST EVALUATION SORTER END ---
 
-        // Limit branching factor by searching 30 most promising moves (or fewer if less available)
-            // or just 30 random moves if not sorting
-        moves = moves.subList(0, Math.min(30, moves.size()));
+        // Limit branching factor by taking the top 30 BEST moves found by our quick sorter
+        moves = moves.subList(0, Math.min(36, moves.size()));
 
         if (maximizingPlayer) {
-
             int maxEval = Integer.MIN_VALUE;
 
             for (int[] move : moves) {
@@ -613,14 +640,13 @@ public class COSC322Test extends GamePlayer {
                 alpha = Math.max(alpha, eval);
 
                 if (beta <= alpha) {
+                    killerMoves[depth] = move;
                     break; // prune
                 }
             }
-
             return maxEval;
 
         } else {
-
             int minEval = Integer.MAX_VALUE;
 
             for (int[] move : moves) {
@@ -636,10 +662,10 @@ public class COSC322Test extends GamePlayer {
                 beta = Math.min(beta, eval);
 
                 if (beta <= alpha) {
+                    killerMoves[depth] = move;
                     break; // prune
                 }
             }
-
             return minEval;
         }
     }
