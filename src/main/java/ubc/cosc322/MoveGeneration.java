@@ -3,8 +3,6 @@ package ubc.cosc322;
 import java.util.ArrayList;
 import java.util.List;
 
-// Calculates all legal move given a game state and the player color. 
-// Returns a List<int[]> of all possible new game states.
 public class MoveGeneration {
 
     public static final int EMPTY = 0;
@@ -27,7 +25,8 @@ public class MoveGeneration {
         return board;
     }
 
-    public static int[][] applyMove(int[][] board, int fromRow, int fromCol, int toRow, int toCol, int arrowRow, int arrowCol) {
+    public static int[][] applyMove(int[][] board, int fromRow, int fromCol,
+                                     int toRow, int toCol, int arrowRow, int arrowCol) {
         int[][] newBoard = copyBoard(board);
         int piece = newBoard[fromRow][fromCol];
         newBoard[fromRow][fromCol] = EMPTY;
@@ -64,32 +63,29 @@ public class MoveGeneration {
 
     public static List<int[]> getAllMoves(int[][] board, int color) {
         List<int[]> allMoves = new ArrayList<>();
-        List<int[]> queens = getQueenPositions(board, color);
 
-        for (int[] queen : queens) {
-            int qRow = queen[0];
-            int qCol = queen[1];
+        for (int qRow = 1; qRow <= 10; qRow++) {
+            for (int qCol = 1; qCol <= 10; qCol++) {
+                if (board[qRow][qCol] != color) continue;
 
-            List<int[]> queenMoves = getReachableSquares(board, qRow, qCol);
+                List<int[]> queenMoves = getReachableSquares(board, qRow, qCol);
 
-            for (int[] dest : queenMoves) {
-                int dRow = dest[0];
-                int dCol = dest[1];
+                for (int[] dest : queenMoves) {
+                    int dRow = dest[0];
+                    int dCol = dest[1];
 
-                // Temporarily move queen
-                board[qRow][qCol] = EMPTY;
-                board[dRow][dCol] = color;
+                    board[qRow][qCol] = EMPTY;
+                    board[dRow][dCol] = color;
 
-                // Get arrow moves from new position
-                List<int[]> arrowMoves = getReachableSquares(board, dRow, dCol);
+                    List<int[]> arrowMoves = getReachableSquares(board, dRow, dCol);
 
-                for (int[] arrow : arrowMoves) {
-                    allMoves.add(new int[]{qRow, qCol, dRow, dCol, arrow[0], arrow[1]});
+                    for (int[] arrow : arrowMoves) {
+                        allMoves.add(new int[]{qRow, qCol, dRow, dCol, arrow[0], arrow[1]});
+                    }
+
+                    board[dRow][dCol] = EMPTY;
+                    board[qRow][qCol] = color;
                 }
-
-                // Undo temporary move
-                board[dRow][dCol] = EMPTY;
-                board[qRow][qCol] = color;
             }
         }
 
