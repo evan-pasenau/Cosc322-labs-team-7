@@ -279,6 +279,7 @@ public class COSC322Test extends GamePlayer {
 
                 } catch (Exception e) {
                     System.err.println("Thread interrupted during evaluation!");
+                    e.printStackTrace();
                 }
             }
 
@@ -591,15 +592,21 @@ public class COSC322Test extends GamePlayer {
             }
         }
 
+        // THE FIX: Take a local snapshot of the killer move for this depth.
+        // This prevents other threads from pulling the rug out from under us during the sort.
+        final int[] currentKiller = killerMoves[depth];
+
         // 2. Sort moves based on a lightning-fast heuristic
         moves.sort((a, b) -> {
             int scoreA = 0;
             int scoreB = 0;
 
             // --- KILLER MOVE HEURISTIC ---
-            // If this move was a killer move in a parallel timeline, evaluate it FIRST
-            if (java.util.Arrays.equals(a, killerMoves[depth])) scoreA += 1000000;
-            if (java.util.Arrays.equals(b, killerMoves[depth])) scoreB += 1000000;
+            // Use the snapshot, NOT the live array
+            if (currentKiller != null) {
+                if (java.util.Arrays.equals(a, currentKiller)) scoreA += 1000000;
+                if (java.util.Arrays.equals(b, currentKiller)) scoreB += 1000000;
+            }
 
             // Heuristic A: Centralization
             scoreA += (int)(24 - (Math.abs(a[2] - 5.5) + Math.abs(a[3] - 5.5)) * 2 - (Math.abs(a[4] - 5.5) + Math.abs(a[5] - 5.5)));
