@@ -21,10 +21,10 @@ import ygraph.ai.smartfox.games.amazons.AmazonsGameMessage;
 public class COSC322Test extends GamePlayer {
 
     // Configuration
-    private static final long MOVE_TIME_LIMIT_MS = 25000; // Server allows 30s
-    private static final long SAFETY_MARGIN_MS   = 3000;  // Stop early for network latency
-    private static final int  MAX_CANDIDATES     = 35;    // Top moves to search deeply
-    private static final int  SOFT_MOVE_CAP      = 30;    // Max moves per minimax node
+    private static final long MOVE_TIME_LIMIT_MS = 25000;
+    private static final long SAFETY_MARGIN_MS   = 3000;
+    private static final int  MAX_CANDIDATES     = 35;
+    private static final int  SOFT_MOVE_CAP      = 15;
     private static final int  MAX_KILLER_DEPTH   = 50;
 
     private static final int WIN_SCORE  = Integer.MAX_VALUE - 1;
@@ -50,16 +50,7 @@ public class COSC322Test extends GamePlayer {
     private ExecutorService executor;
     private ConcurrentHashMap<Long, Integer> evalCache = new ConcurrentHashMap<>();
 
-    // Pre-allocated BFS scratch arrays per thread.
-    // Avoids allocating int[11][11] + int[800] x2 on every bfsQueenDistance call.
-    // evaluateBoard calls BFS twice per eval, and evals happen thousands of times per search.
-    private static final ThreadLocal<int[][]> tlDist1 = ThreadLocal.withInitial(() -> new int[11][11]);
-    private static final ThreadLocal<int[][]> tlDist2 = ThreadLocal.withInitial(() -> new int[11][11]);
-    private static final ThreadLocal<int[]>   tlQueueR = ThreadLocal.withInitial(() -> new int[800]);
-    private static final ThreadLocal<int[]>   tlQueueC = ThreadLocal.withInitial(() -> new int[800]);
-
-    // Zobrist hashing — each (row, col, piece) gets a unique random 64-bit key.
-    // Board hash = XOR of all piece keys. Collision-resistant eval caching.
+    // Zobrist hashing for eval cache
     private static final long[][][] zobristTable = new long[11][11][4];
     private static final long zobristColorKey;
     static {
@@ -71,12 +62,42 @@ public class COSC322Test extends GamePlayer {
         zobristColorKey = zRng.nextLong();
     }
 
-    // Killer moves — two slots per depth. Moves that caused beta cutoffs
-    // get tried first at the same depth in future branches.
+    // Killer moves — two slots per depth
     private int[][] killerMoves1   = new int[MAX_KILLER_DEPTH][6];
     private int[][] killerMoves2   = new int[MAX_KILLER_DEPTH][6];
     private boolean[] killerValid1 = new boolean[MAX_KILLER_DEPTH];
     private boolean[] killerValid2 = new boolean[MAX_KILLER_DEPTH];
+
+    // Raw bitmap constants for BFS.
+    // Board is 100 bits packed into two longs: lo=bits 0-63, hi=bits 64-99.
+    // Bit index = (row-1)*10 + (col-1).
+    private static final long HI_MASK = (1L << 36) - 1;
+
+    // Edge masks prevent column wrapping when shifting horizontally
+    private static final long NOT_LEFT_LO, NOT_LEFT_HI;
+    private static final long NOT_RIGHT_LO, NOT_RIGHT_HI;
+    static {
+        long nlLo = 0, nlHi = 0, nrLo = 0, nrHi = 0;
+        for (int i = 0; i < 100; i++) {
+            if (i % 10 != 0) {
+                if (i < 64) nlLo |= (1L << i); else nlHi |= (1L << (i - 64));
+            }
+            if (i % 10 != 9) {
+                if (i < 64) nrLo |= (1L << i); else nrHi |= (1L << (i - 64));
+            }
+        }
+        NOT_LEFT_LO = nlLo;   NOT_LEFT_HI = nlHi;
+        NOT_RIGHT_LO = nrLo;  NOT_RIGHT_HI = nrHi;
+    }
+
+    // Direction table for bitmap BFS: shift amount + direction + edge mask
+    // 0=Right, 1=Left, 2=Down, 3=Up, 4=DownRight, 5=DownLeft, 6=UpRight, 7=UpLeft
+    private static final int[] SHIFT_AMOUNTS  = {1, 1, 10, 10, 11, 9, 9, 11};
+    private static final boolean[] SHIFT_LEFT = {true, false, true, false, true, true, false, false};
+
+    // Pre-allocated dist arrays per thread (avoids allocation in eval)
+    private static final ThreadLocal<int[]> tlDist1 = ThreadLocal.withInitial(() -> new int[100]);
+    private static final ThreadLocal<int[]> tlDist2 = ThreadLocal.withInitial(() -> new int[100]);
 
     private class MoveResult {
         final int[] move;
@@ -99,7 +120,7 @@ public class COSC322Test extends GamePlayer {
     }
 
     public static void main(String[] args) {
-        COSC322Test player = new COSC322Test("pablo", "name");
+        COSC322Test player = new COSC322Test("pablo2", "name");
 
         if (player.getGameGUI() == null) {
             player.Go();
@@ -130,8 +151,6 @@ public class COSC322Test extends GamePlayer {
         if (getGameGUI() != null)
             getGameGUI().setRoomInformation(getGameClient().getRoomList());
     }
-
-    // Server message handling
 
     @Override
     public boolean handleGameMessage(String messageType, Map<String, Object> msgDetails) {
@@ -189,7 +208,6 @@ public class COSC322Test extends GamePlayer {
         @SuppressWarnings("unchecked")
         ArrayList<Integer> arrowPos  = (ArrayList<Integer>) msgDetails.get(AmazonsGameMessage.ARROW_POS);
 
-        // If the piece at the source is our color, this is our own move echoed back
         int movedPiece = board[queenCurr.get(0)][queenCurr.get(1)];
         int ourColor = isBlack ? MoveGeneration.BLACK : MoveGeneration.WHITE;
         if (movedPiece == ourColor) return;
@@ -208,8 +226,7 @@ public class COSC322Test extends GamePlayer {
     /*
      * Main move selection.
      * Phase 1: shallow territory eval on all moves, sort best-first.
-     * Phase 2: iterative deepening (depth 2, 3, 4...) on top candidates
-     *          until time runs out or position is solved.
+     * Phase 2: iterative deepening on top candidates until time runs out.
      */
     private void makeIntelligentMove() {
         int color = isBlack ? MoveGeneration.BLACK : MoveGeneration.WHITE;
@@ -230,11 +247,9 @@ public class COSC322Test extends GamePlayer {
         int bestScore = bestMove[6];
         int bestDepth = 1;
 
-        // Max depth = empty squares (game can't last longer than that)
         int emptySquares = countEmptySquares();
         int maxUsefulDepth = Math.min(emptySquares, MAX_KILLER_DEPTH - 1);
 
-        // Phase 2: iterative deepening on top candidates
         int numCandidates = Math.min(MAX_CANDIDATES, scoredMoves.size());
         List<int[]> candidates = new ArrayList<>(numCandidates);
         for (int i = 0; i < numCandidates; i++) {
@@ -281,13 +296,11 @@ public class COSC322Test extends GamePlayer {
         sendMove(bestMove, color);
     }
 
-    // Evaluate every move with a quick territory score, return sorted list
     private List<int[]> shallowEvalAllMoves(List<int[]> moves, int color) {
         List<int[]> scored = new ArrayList<>(moves.size());
         int total = moves.size();
         int lastPercent = -1;
 
-        // Start with empty bar
         printProgressBar("Depth 1", 0, total);
 
         for (int i = 0; i < total; i++) {
@@ -299,7 +312,6 @@ public class COSC322Test extends GamePlayer {
             int score = evaluateBoard(newBoard, color);
             scored.add(new int[]{move[0], move[1], move[2], move[3], move[4], move[5], score});
 
-            // Update bar every 5%
             int percent = (int)(((i + 1) / (double) total) * 100);
             if (percent / 5 > lastPercent / 5 || i == total - 1) {
                 lastPercent = percent;
@@ -309,17 +321,14 @@ public class COSC322Test extends GamePlayer {
 
         scored.sort((a, b) -> Integer.compare(b[6], a[6]));
 
-        // Final bar + result
         printProgressBar("Depth 1", scored.size(), total);
         System.out.println();
-        if (!scored.isEmpty()) {
+        if (!scored.isEmpty())
             System.out.println("  -> Complete | Best score: " + scored.get(0)[6]);
-        }
 
         return scored;
     }
 
-    // Search all candidates at a given depth using parallel minimax
     private SearchResult searchAtDepth(List<int[]> candidates, int depth, int color) {
         int depthBestScore = Integer.MIN_VALUE;
         int[] depthBestMove = candidates.get(0);
@@ -328,7 +337,6 @@ public class COSC322Test extends GamePlayer {
         String label = "Depth " + depth;
         int total = candidates.size();
 
-        // Print empty bar immediately so it starts at 0%
         printProgressBar(label, 0, total);
 
         AtomicInteger globalAlpha = new AtomicInteger(Integer.MIN_VALUE);
@@ -343,7 +351,7 @@ public class COSC322Test extends GamePlayer {
 
             Callable<MoveResult> task = () -> {
                 int a = globalAlpha.get();
-                int score = minimaxAlphaBeta(newBoard, d, a, Integer.MAX_VALUE, false, color);
+                int score = minimaxAlphaBeta(newBoard, d, a, Integer.MAX_VALUE, false, color, globalAlpha);
                 updateGlobalAlpha(globalAlpha, score);
                 return new MoveResult(move, score);
             };
@@ -375,7 +383,6 @@ public class COSC322Test extends GamePlayer {
             }
         }
 
-        // Final bar state + newline
         printProgressBar(label, completedCount, total);
         System.out.println();
 
@@ -388,9 +395,10 @@ public class COSC322Test extends GamePlayer {
     }
 
     /*
-     * Territory-only evaluation using BFS Voronoi.
-     * For each empty square, whoever's queens can reach it in fewer moves owns it.
-     * Squares owned by 2+ move advantage count double (gradient bonus).
+     * Territory evaluation using raw bitmap BFS.
+     * Converts board to two longs (lo/hi), runs BFS with native bit shifts.
+     * All squares in a direction are shifted simultaneously in ~2 CPU instructions
+     * instead of looping per square.
      */
     private int evaluateBoard(int[][] boardState, int color) {
         long hash = computeZobristHash(boardState, color);
@@ -401,98 +409,144 @@ public class COSC322Test extends GamePlayer {
         int oppColor = (color == MoveGeneration.BLACK)
             ? MoveGeneration.WHITE : MoveGeneration.BLACK;
 
-        // Reuse pre-allocated arrays from this thread
-        int[][] myDist  = tlDist1.get();
-        int[][] oppDist = tlDist2.get();
-        int[] qR = tlQueueR.get();
-        int[] qC = tlQueueC.get();
+        // Convert board to bitmasks
+        long emptyLo = 0, emptyHi = 0;
+        long myLo = 0, myHi = 0;
+        long oppLo = 0, oppHi = 0;
 
-        bfsQueenDistance(boardState, color, myDist, qR, qC);
-        bfsQueenDistance(boardState, oppColor, oppDist, qR, qC);
-
-        int score = 0;
         for (int r = 1; r <= 10; r++) {
             for (int c = 1; c <= 10; c++) {
-                if (boardState[r][c] != 0) continue;
-
-                int md = myDist[r][c];
-                int od = oppDist[r][c];
-
-                if (md < od) {
-                    score++;
-                    if (od - md >= 2) score++;
-                } else if (od < md) {
-                    score--;
-                    if (md - od >= 2) score--;
+                int bit = (r - 1) * 10 + (c - 1);
+                int piece = boardState[r][c];
+                if (piece == MoveGeneration.EMPTY) {
+                    if (bit < 64) emptyLo |= (1L << bit); else emptyHi |= (1L << (bit - 64));
+                } else if (piece == color) {
+                    if (bit < 64) myLo |= (1L << bit); else myHi |= (1L << (bit - 64));
+                } else if (piece == oppColor) {
+                    if (bit < 64) oppLo |= (1L << bit); else oppHi |= (1L << (bit - 64));
                 }
             }
+        }
+
+        int[] myDist = tlDist1.get();
+        int[] oppDist = tlDist2.get();
+        bitmapBFS(myLo, myHi, emptyLo, emptyHi, myDist);
+        bitmapBFS(oppLo, oppHi, emptyLo, emptyHi, oppDist);
+
+        int score = 0;
+        for (int i = 0; i < 64; i++) {
+            if ((emptyLo & (1L << i)) == 0) continue;
+            int md = myDist[i], od = oppDist[i];
+            if (md < od) { score++; if (od - md >= 2) score++; }
+            else if (od < md) { score--; if (md - od >= 2) score--; }
+        }
+        for (int i = 0; i < 36; i++) {
+            if ((emptyHi & (1L << i)) == 0) continue;
+            int md = myDist[i + 64], od = oppDist[i + 64];
+            if (md < od) { score++; if (od - md >= 2) score++; }
+            else if (od < md) { score--; if (md - od >= 2) score--; }
         }
 
         evalCache.put(hash, score);
         return score;
     }
 
-    /*
-     * BFS from all queens of a color simultaneously.
-     * Writes min queen-move distance into the provided dist array.
-     * Uses provided queue arrays to avoid allocation.
-     */
-    private void bfsQueenDistance(int[][] board, int color, int[][] dist, int[] queueR, int[] queueC) {
-        // Reset dist array
-        for (int r = 1; r <= 10; r++)
-            for (int c = 1; c <= 10; c++)
-                dist[r][c] = Integer.MAX_VALUE;
+    // Shift 100-bit value left by n (toward higher bits)
+    private static long[] shl(long lo, long hi, int n) {
+        if (n >= 64) return new long[]{0, (lo << (n - 64)) & HI_MASK};
+        return new long[]{lo << n, ((hi << n) | (lo >>> (64 - n))) & HI_MASK};
+    }
 
-        int qHead = 0, qTail = 0;
+    // Shift 100-bit value right by n (toward lower bits)
+    private static long[] shr(long lo, long hi, int n) {
+        if (n >= 64) return new long[]{hi >>> (n - 64), 0};
+        return new long[]{(lo >>> n) | (hi << (64 - n)), hi >>> n};
+    }
 
-        // Seed with queen positions at distance 0
-        for (int r = 1; r <= 10; r++) {
-            for (int c = 1; c <= 10; c++) {
-                if (board[r][c] == color) {
-                    dist[r][c] = 0;
-                    queueR[qTail] = r;
-                    queueC[qTail] = c;
-                    qTail++;
-                }
-            }
-        }
-
-        while (qHead < qTail) {
-            int r = queueR[qHead];
-            int c = queueC[qHead];
-            qHead++;
-
-            int nextDist = dist[r][c] + 1;
-
-            for (int[] d : DIRECTIONS) {
-                int nr = r + d[0];
-                int nc = c + d[1];
-
-                // Slide along direction until hitting edge or obstacle
-                while (nr >= 1 && nr <= 10 && nc >= 1 && nc <= 10
-                        && board[nr][nc] == 0) {
-                    if (nextDist < dist[nr][nc]) {
-                        dist[nr][nc] = nextDist;
-                        if (qTail < queueR.length) {
-                            queueR[qTail] = nr;
-                            queueC[qTail] = nc;
-                            qTail++;
-                        }
-                    }
-                    nr += d[0];
-                    nc += d[1];
-                }
-            }
+    // Edge mask for a direction: prevents column wrapping on horizontal shifts
+    private static long[] edgeMask(int dir) {
+        switch (dir) {
+            case 0: case 4: case 6: return new long[]{NOT_RIGHT_LO, NOT_RIGHT_HI};
+            case 1: case 5: case 7: return new long[]{NOT_LEFT_LO, NOT_LEFT_HI};
+            default: return new long[]{~0L, HI_MASK};
         }
     }
 
-    // Alpha-beta minimax with move ordering
+    /*
+     * Bitmap BFS from all queens simultaneously.
+     * Each BFS step slides the frontier in all 8 directions using bulk bit shifts.
+     * One shift + AND + OR processes all frontier squares at once.
+     */
+    private void bitmapBFS(long queenLo, long queenHi, long emptyLo, long emptyHi, int[] dist) {
+        Arrays.fill(dist, Integer.MAX_VALUE);
+
+        // Seed queens at distance 0
+        for (int i = 0; i < 64; i++)
+            if ((queenLo & (1L << i)) != 0) dist[i] = 0;
+        for (int i = 0; i < 36; i++)
+            if ((queenHi & (1L << i)) != 0) dist[i + 64] = 0;
+
+        long reachedLo = queenLo, reachedHi = queenHi;
+        long frontierLo = queenLo, frontierHi = queenHi;
+
+        for (int step = 1; (frontierLo | frontierHi) != 0; step++) {
+            long newFrLo = 0, newFrHi = 0;
+
+            for (int d = 0; d < 8; d++) {
+                int amount = SHIFT_AMOUNTS[d];
+                boolean isLeft = SHIFT_LEFT[d];
+                long[] em = edgeMask(d);
+
+                long sLo = frontierLo, sHi = frontierHi;
+
+                // Slide along direction until no new squares found
+                while ((sLo | sHi) != 0) {
+                    sLo &= em[0];
+                    sHi &= em[1];
+
+                    long[] sh = isLeft ? shl(sLo, sHi, amount) : shr(sLo, sHi, amount);
+
+                    sh[0] &= emptyLo & ~reachedLo;
+                    sh[1] &= emptyHi & ~reachedHi;
+
+                    newFrLo |= sh[0];
+                    newFrHi |= sh[1];
+
+                    sLo = sh[0];
+                    sHi = sh[1];
+                }
+            }
+
+            // Record distances
+            for (int i = 0; i < 64; i++)
+                if ((newFrLo & (1L << i)) != 0) dist[i] = step;
+            for (int i = 0; i < 36; i++)
+                if ((newFrHi & (1L << i)) != 0) dist[i + 64] = step;
+
+            reachedLo |= newFrLo;
+            reachedHi |= newFrHi;
+            frontierLo = newFrLo;
+            frontierHi = newFrHi;
+        }
+    }
+
+    /*
+     * Alpha-beta minimax with move ordering.
+     * sharedAlpha lets parallel threads tighten each other's pruning window.
+     */
     private int minimaxAlphaBeta(int[][] boardState, int depth, int alpha, int beta,
-                                  boolean maximizing, int color) {
+                                  boolean maximizing, int color, AtomicInteger sharedAlpha) {
         if (isTimeUp()) return 0;
 
         if (depth == 0)
             return evaluateBoard(boardState, color);
+
+        // Tighten alpha from other threads' discoveries
+        if (sharedAlpha != null) {
+            int shared = sharedAlpha.get();
+            if (shared > alpha) alpha = shared;
+            if (beta <= alpha) return alpha;
+        }
 
         int currentColor = maximizing ? color
             : (color == MoveGeneration.BLACK ? MoveGeneration.WHITE : MoveGeneration.BLACK);
@@ -501,7 +555,6 @@ public class COSC322Test extends GamePlayer {
 
         List<int[]> moves = MoveGeneration.getAllMoves(boardState, currentColor);
 
-        // No moves = this player loses
         if (moves.isEmpty())
             return maximizing ? LOSS_SCORE : WIN_SCORE;
 
@@ -513,7 +566,7 @@ public class COSC322Test extends GamePlayer {
                 if (isTimeUp()) break;
                 int[][] newBoard = MoveGeneration.applyMove(boardState,
                     move[0], move[1], move[2], move[3], move[4], move[5]);
-                int eval = minimaxAlphaBeta(newBoard, depth - 1, alpha, beta, false, color);
+                int eval = minimaxAlphaBeta(newBoard, depth - 1, alpha, beta, false, color, null);
                 maxEval = Math.max(maxEval, eval);
                 alpha = Math.max(alpha, eval);
                 if (beta <= alpha) {
@@ -528,7 +581,7 @@ public class COSC322Test extends GamePlayer {
                 if (isTimeUp()) break;
                 int[][] newBoard = MoveGeneration.applyMove(boardState,
                     move[0], move[1], move[2], move[3], move[4], move[5]);
-                int eval = minimaxAlphaBeta(newBoard, depth - 1, alpha, beta, true, color);
+                int eval = minimaxAlphaBeta(newBoard, depth - 1, alpha, beta, true, color, null);
                 minEval = Math.min(minEval, eval);
                 beta = Math.min(beta, eval);
                 if (beta <= alpha) {
@@ -540,27 +593,21 @@ public class COSC322Test extends GamePlayer {
         }
     }
 
-    /*
-     * Move ordering for alpha-beta: killer moves first, then sorted by a
-     * cheap heuristic (queen centrality + arrow proximity to opponent queens).
-     * Better ordering = more pruning = deeper search in same time.
-     */
+    // Move ordering: killer moves first, then cheap heuristic (centrality + arrow aggression)
     private List<int[]> orderMoves(List<int[]> moves, int[][] boardState,
                                     int oppColor, int depth) {
         int depthIndex = Math.min(depth, MAX_KILLER_DEPTH - 1);
         int moveCnt = moves.size();
 
-        // Find killer moves in the list
         int ki1 = findKillerIndex(moves, killerMoves1[depthIndex], killerValid1[depthIndex]);
         int ki2 = findKillerIndex(moves, killerMoves2[depthIndex], killerValid2[depthIndex]);
         if (ki2 == ki1) ki2 = -1;
 
-        // Start with killers
         List<int[]> ordered = new ArrayList<>(Math.min(moveCnt, SOFT_MOVE_CAP + 2));
         if (ki1 >= 0) ordered.add(moves.get(ki1));
         if (ki2 >= 0) ordered.add(moves.get(ki2));
 
-        // Locate opponent queens for the heuristic
+        // Locate opponent queens
         int numOpp = 0;
         int[] oqR = new int[4], oqC = new int[4];
         for (int r = 1; r <= 10; r++)
@@ -571,9 +618,9 @@ public class COSC322Test extends GamePlayer {
                     numOpp++;
                 }
 
-        // Score non-killer moves with cheap heuristic
+        // Score non-killer moves
         int nonKillerCount = moveCnt - ordered.size();
-        int[] scoredFlat = new int[nonKillerCount * 2]; // (index, score) pairs
+        int[] scoredFlat = new int[nonKillerCount * 2];
         int flatIdx = 0;
 
         for (int i = 0; i < moveCnt; i++) {
@@ -582,7 +629,7 @@ public class COSC322Test extends GamePlayer {
             int[] m = moves.get(i);
             int hScore = 0;
 
-            // Queen centrality: |2r-11| + |2c-11| is manhattan distance to center * 2
+            // Queen centrality
             hScore += 20 - (Math.abs(2 * m[2] - 11) + Math.abs(2 * m[3] - 11));
 
             // Arrow near opponent queens
@@ -597,7 +644,7 @@ public class COSC322Test extends GamePlayer {
             flatIdx += 2;
         }
 
-        // Insertion sort on the flat array
+        // Insertion sort
         int pairCount = flatIdx / 2;
         for (int i = 1; i < pairCount; i++) {
             int tmpIdx   = scoredFlat[i * 2];
@@ -612,7 +659,6 @@ public class COSC322Test extends GamePlayer {
             scoredFlat[(j + 1) * 2 + 1] = tmpScore;
         }
 
-        // Add top-scored moves up to soft cap
         int cap = Math.min(SOFT_MOVE_CAP, pairCount);
         for (int i = 0; i < cap; i++)
             ordered.add(moves.get(scoredFlat[i * 2]));
@@ -620,7 +666,6 @@ public class COSC322Test extends GamePlayer {
         return ordered;
     }
 
-    // Returns index of killer move in list, or -1 if not found
     private int findKillerIndex(List<int[]> moves, int[] killer, boolean valid) {
         if (!valid) return -1;
         for (int i = 0; i < moves.size(); i++) {
@@ -632,7 +677,6 @@ public class COSC322Test extends GamePlayer {
         return -1;
     }
 
-    // Store killer move: new move becomes primary, old primary becomes secondary
     private void storeKillerMove(int depthIndex, int[] move) {
         if (killerValid1[depthIndex] && movesMatch(move, killerMoves1[depthIndex]))
             return;
@@ -682,7 +726,6 @@ public class COSC322Test extends GamePlayer {
         return count;
     }
 
-    // Thread-safe CAS update of global alpha across parallel root searches
     private void updateGlobalAlpha(AtomicInteger globalAlpha, int score) {
         int currentVal;
         do {
@@ -691,7 +734,6 @@ public class COSC322Test extends GamePlayer {
         } while (!globalAlpha.compareAndSet(currentVal, score));
     }
 
-    // Send move to server and update local board
     private void sendMove(int[] move, int color) {
         int fromRow = move[0], fromCol = move[1];
         int toRow   = move[2], toCol   = move[3];
@@ -715,7 +757,6 @@ public class COSC322Test extends GamePlayer {
         moveCount++;
     }
 
-    // Overwrites the current line with a progress bar
     private void printProgressBar(String label, int current, int total) {
         int barWidth = 30;
         int filled = (total > 0) ? (int)((current / (double) total) * barWidth) : 0;
